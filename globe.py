@@ -1,4 +1,4 @@
-import pdb
+import pdb,time
 import tempfile,os,datetime
 import numpy as np
 import matplotlib.pyplot as plt
@@ -69,6 +69,11 @@ def solar_position_approx(dt,degrees=False):
     sdec = np.arctan(sin_d/cos_d)
     sransn = np.pi - np.arctan2(1/np.tan(obliq)*sin_d/cos_d,
                                 -1*np.cos(slp)/cos_d)
+
+    print('Greenwich Sidereal Time:',gst)    
+    print('Solar Declination:',sdec)
+    print('Solar Right Ascension:',sransn)
+
     #Since GST is in degrees convert declination and right ascension
     if degrees:
         sdec = sdec * 180./np.pi
@@ -181,11 +186,7 @@ def legend(scalar_lut_manager,label=None):
     scalar_lut_manager.show_legend = True
     scalar_lut_manager.data_name = label if label is not None else u''
 
-def geosurf(glats,glons,geodata,alt=300.,
-                vmin=None,vmax=None,cmap='viridis',reverse_cmap=False,
-                amin=None,amax=None,alpha=None,
-                colorbar=False,label=None):
-    """Draw gridded data in geographic coordinates as a surface (mesh) """
+def geo2cart(glats,glons,alt=110.):
     Re = 6371.2
     r = (Re+alt)/Re
     th = np.radians(90.-glats)
@@ -193,13 +194,28 @@ def geosurf(glats,glons,geodata,alt=300.,
     x = r*np.sin(th)*np.cos(ph)
     y = r*np.sin(th)*np.sin(ph)
     z = r*np.cos(th)
+    return x,y,z
+
+def update_geosurf(mesh,glats,glons,geodata,alt=300.):
+    x,y,z = geo2cart(glats,glons,alt)
+    mesh.mlab_source.trait_set(x=x,y=y,z=z,scalars=geodata)
+    mlab.draw()
+
+def geosurf(glats,glons,geodata,alt=300.,
+                vmin=None,vmax=None,cmap='viridis',reverse_cmap=False,
+                amin=None,amax=None,alpha=None,
+                colorbar=False,label=None,
+                transparent_below_range=False):
+    """Draw gridded data in geographic coordinates as a surface (mesh) """
+    x,y,z = geo2cart(glats,glons,alt)
     mesh = mlab.mesh(x,y,z,
                         scalars=geodata,
                         vmin=vmin,
                         vmax=vmax,
                         colormap=cmap)
     
-    lut_set_transparent_below_range(mesh.parent.scalar_lut_manager.lut)
+    if transparent_below_range:
+        lut_set_transparent_below_range(mesh.parent.scalar_lut_manager.lut)
     
     if amin is not None and amax is not None:
         lut_set_alpha_range(mesh.parent.scalar_lut_manager.lut,
@@ -219,18 +235,31 @@ def set_camera_position(x,y,z):
     scene = fig.scene
     #Set camera to equator
     camera = scene.camera
-    camera.position=np.array([5.,0.,5.])
+    camera.position=np.array([x,y,z])
+    print('Camera at [{},{},{}]'.format(x,y,z))
     #camera.view_angle=0.
     camera.compute_view_plane_normal()
     scene.render()
+
+def camera_to_sun_sync(dt,elevation=50.,distance=5.,azi_lag=90.):
+    """Positions the camera theta_lag degrees behind
+    a fixed point relative to the solar position"""
+    gst,sdec,sransn = solar_position_approx(dt)
+    azimuth = -1*np.degrees(gst)-azi_lag
+    # th = np.radians(90.-elevation)
+    # phi = -1*gst
+    # xf = np.cos(th)*np.cos(phi)
+    # yf = np.cos(th)*np.sin(phi)
+    # zf = np.sin(th) 
+    mlab.view(azimuth=azimuth,
+                elevation=elevation,
+                distance=distance)
 
 def lights_to_solar_position(dt):
     """Modify the Mayavi light locations to be a the sun's right ascension
     and declination (i.e. pointed at the subsolar point)
     """
     gst,sdec,sransn = solar_position_approx(dt)
-    print('Solar Declination:',sdec)
-    print('Solar Right Ascension:',sransn)
     #pdb.set_trace()
     
     #Vtk mode is one light
@@ -242,22 +271,27 @@ def lights_to_solar_position(dt):
         light.azimuth = srans
         light.elevation = 90.-sdec
     
+def calculate_dark(dt):
+    glats,glons = np.mgrid[-90:90:512j,0:360:1024j]
+    gst,sdec,sransn = solar_position_approx(dt)
+    sza = solar_zenith_angle(dt,glats,glons)
+    dark = (sza-90.)/90.+1.
+    return glats,glons,dark
+
 def darkness_geosurf(dt):
     """Draw a surface over the dark portion of the planet,
     i.e. regions with solar zenith angle > 90
     """
-    print(dt)
-    glats,glons = np.mgrid[-90:90:512j,0:360:1024j]
-    gst,sdec,sransn = solar_position_approx(dt)
-    
-    sza = solar_zenith_angle(dt,glats,glons)
-    dark = (sza-90.)/90.+1.
+    glats,glons,dark = calculate_dark(dt)
     #gist_yarg is a white to black colormap
-    mesh = geosurf(glats,glons,dark,alt=50.,vmin=1.,vmax=1.01,alpha=.2,cmap='bone',reverse_cmap=True)
+    mesh = geosurf(glats,glons,dark,alt=50.,
+                    vmin=1.,vmax=1.01,alpha=.2,transparent_below_range=True,
+                    cmap='bone',reverse_cmap=True)
     lut = mesh.parent.scalar_lut_manager.lut
     lut.use_above_range_color=1
     lut.above_range_color=np.array([0.,0.,0.,.75])
     mlab.draw()
+    return mesh
 
 def download_blue_marble():
     """from https://visibleearth.nasa.gov/collection/1484/blue-marble"""
@@ -277,32 +311,62 @@ def download_auroral_nowcast():
     open(nowcastfn,'w').write(r.content)
     return nowcastfn
 
+def nowcast_auroral_probability():
+    nowcasttxtfn = download_auroral_nowcast()
+    glats,glons = np.mgrid[-90:90:512j,0:360:1024j]
+    aur_prob = np.genfromtxt(nowcasttxtfn).reshape((512,1024))
+    return glats,glons,aur_prob
+
+def visual_test_update_geosurf():
+    """Make a plot of the terminator and sync the camera to
+    the solar position to mimic earth rotation
+    """
+    fig = mlab.figure(size=(600, 600))
+    
+    imagefn = download_blue_marble()
+    manual_sphere(imagefn)
+
+    dt = datetime.datetime.utcnow()
+    dark_mesh = darkness_geosurf(dt)
+    set_camera_position(5.,0.,5.)
+
+    for i in range(24):
+        dt = datetime.datetime(2019,11,30,i)
+        glats,glons,dark = calculate_dark(dt)
+        camera_to_sun_sync(dt)
+        update_geosurf(dark_mesh,glats,glons,dark,alt=50.)
+        mlab.savefig('earth_{}.png'.format(i))
+
 def visual_test_geosurf():
     """Make a plot of the current NOAA auroral probability on the NASA
     blue marble image
     """
     imagefn = download_blue_marble()
-    nowcasttxtfn = download_auroral_nowcast()
-
+    
     # create a figure window (and scene)
     fig = mlab.figure(size=(600, 600))
+    #fig.scene.scene.background_color=[0,0,0]
     #sphere_actor = map_image_to_unit_sphere_actor(imagefn)
     #fig.scene.add_actor(sphere_actor)
     manual_sphere(imagefn)
 
-    #dt = datetime.datetime(2019,11,30,6)
     dt = datetime.datetime.utcnow()
-    darkness_geosurf(dt)
-    set_camera_position(5.,0.,5.)
+    dark_mesh = darkness_geosurf(dt)
+    camera_to_sun_sync(dt,distance=3.)
 
-    glats,glons = np.mgrid[-90:90:512j,0:360:1024j]
-    aur_prob = np.genfromtxt(nowcasttxtfn).reshape((512,1024))
-    geosurf(glats,glons,aur_prob,
+    glats,glons,aur_prob = nowcast_auroral_probability()
+    aur_mesh = geosurf(glats,glons,aur_prob,
                 label='Probability of Aurora',
                 cmap='viridis',vmin=1.,vmax=15.,amin=.5,amax=1.,
-                colorbar=True)
+                colorbar=True,transparent_below_range=True)
+
+    ttext = mlab.text(.05,.05,dt.strftime('%m/%d/%y %H:%M'),line_width=.75)
+    ttext = mlab.text(.05,.02,'NOAA SWPC Aurora Nowcast',line_width=.75)
+
+    mlab.savefig('geosurf_test.png')
 
     mlab.show()
 
 if __name__ == "__main__":
     visual_test_geosurf()
+    #visual_test_update_geosurf()
