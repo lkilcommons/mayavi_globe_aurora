@@ -123,16 +123,18 @@ def get_blue_marble_texture_imgfn():
     coordinates a rough appoximation of 
     Earth-Centered Earth-Fixed coordinates
     """
-    imgfn = download_blue_marble() # shape (N,M,3), flip along first dim
+    image_file = download_blue_marble() # shape (N,M,3), flip along first dim
     outfile = image_file.replace('.jpg', '_flipped.jpg')
+    img = plt.imread(image_file)
+
     # flip output along first dim to get right chirality of the mapping
     flipped_img = img.copy()
-    flipped_img = img[::-1,...]
+    flipped_img = flipped_img[::-1,...]
 
-    ny = img.shape[1]
-    recentered_img = img.copy()
-    recentered_img[:,:ny/2,:]=img[:,ny/2:,:]
-    recentered_img[:,ny/2:,:]=img[:,:ny/2,:]
+    ny = flipped_img.shape[1]
+    recentered_img = flipped_img.copy()
+    recentered_img[:,:ny/2,:]=flipped_img[:,ny/2:,:]
+    recentered_img[:,ny/2:,:]=flipped_img[:,:ny/2,:]
     
     plt.imsave(outfile, recentered_img)
     return outfile
@@ -209,7 +211,7 @@ def blue_marble_unit_sphere_mesh():
     """Generates a unit-sphere mayavi mesh textured with 
     a NASA blue marble map
     """
-    return image_textured_unit_mesh(get_blue_marble_texture_imgfn())
+    return image_textured_unit_sphere_mesh(get_blue_marble_texture_imgfn())
 
 def lut_set_out_of_range_transparent(lut,above=False,below=False):
     """Set data below vmin to a transparent color"""
@@ -294,7 +296,8 @@ def geomesh(glats,glons,geodata,alt=300.,
     mesh.parent.scalar_lut_manager.reverse_lut = reverse_cmap
 
     if transparent_below_range:
-        lut_set_transparent_below_range(mesh.parent.scalar_lut_manager.lut)
+        lut_set_out_of_range_transparent(mesh.parent.scalar_lut_manager.lut,
+                                            below=True)
     
     if amin is not None and amax is not None:
         lut_set_alpha_range(mesh.parent.scalar_lut_manager.lut,
